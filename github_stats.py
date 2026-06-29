@@ -97,21 +97,24 @@ class Queries(object):
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except:
-                print("aiohttp failed for rest query")
+            except Exception as e:
+                print(f"aiohttp failed for rest query: {e}")
                 # Fall back on non-async requests
-                async with self.semaphore:
-                    r_requests = requests.get(
-                        f"https://api.github.com/{path}",
-                        headers=headers,
-                        params=tuple(params.items()),
-                    )
-                    if r_requests.status_code == 202:
-                        print(f"A path returned 202. Retrying...")
-                        await asyncio.sleep(2)
-                        continue
-                    elif r_requests.status_code == 200:
-                        return r_requests.json()
+                try:
+                    async with self.semaphore:
+                        r_requests = requests.get(
+                            f"https://api.github.com/{path}",
+                            headers=headers,
+                            params=tuple(params.items()),
+                        )
+                        if r_requests.status_code == 202:
+                            print(f"A path returned 202. Retrying...")
+                            await asyncio.sleep(2)
+                            continue
+                        elif r_requests.status_code == 200:
+                            return r_requests.json()
+                except Exception as e_fallback:
+                    print(f"requests fallback failed: {e_fallback}")
         # print(f"There were too many 202s. Data for {path} will be incomplete.")
         print("There were too many 202s. Data for this repository will be incomplete.")
         return dict()
@@ -470,23 +473,24 @@ Languages:
             return self._total_contributions
 
         self._total_contributions = 0
-        years = (
-            (await self.queries.query(Queries.contrib_years()))
-            .get("data", {})
-            .get("viewer", {})
-            .get("contributionsCollection", {})
-            .get("contributionYears", [])
-        )
-        by_year = (
-            (await self.queries.query(Queries.all_contribs(years)))
-            .get("data", {})
-            .get("viewer", {})
-            .values()
-        )
-        for year in by_year:
-            self._total_contributions += year.get("contributionCalendar", {}).get(
-                "totalContributions", 0
+        try:
+            contrib_collection = (
+                ((await self.queries.query(Queries.contrib_years())).get("data") or {})
+                .get("viewer", {})
+                .get("contributionsCollection")
             )
+            years = (contrib_collection or {}).get("contributionYears", [])
+            by_year = (
+                ((await self.queries.query(Queries.all_contribs(years))).get("data") or {})
+                .get("viewer", {})
+                .values()
+            )
+            for year in by_year:
+                self._total_contributions += (year or {}).get("contributionCalendar", {}).get(
+                    "totalContributions", 0
+                )
+        except Exception as e:
+            print(f"Error querying total contributions: {e}")
         return cast(int, self._total_contributions)
 
     @property
@@ -499,20 +503,25 @@ Languages:
         additions = 0
         deletions = 0
         for repo in await self.repos:
-            r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
-            for author_obj in r:
-                # Handle malformed response from the API by skipping this repo
-                if not isinstance(author_obj, dict) or not isinstance(
-                    author_obj.get("author", {}), dict
-                ):
+            try:
+                r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
+                if not isinstance(r, list):
                     continue
-                author = author_obj.get("author", {}).get("login", "")
-                if author != self.username:
-                    continue
+                for author_obj in r:
+                    # Handle malformed response from the API by skipping this repo
+                    if not isinstance(author_obj, dict) or not isinstance(
+                        author_obj.get("author", {}), dict
+                    ):
+                        continue
+                    author = author_obj.get("author", {}).get("login", "")
+                    if author != self.username:
+                        continue
 
-                for week in author_obj.get("weeks", []):
-                    additions += week.get("a", 0)
-                    deletions += week.get("d", 0)
+                    for week in author_obj.get("weeks", []):
+                        additions += (week or {}).get("a") or 0
+                        deletions += (week or {}).get("d") or 0
+            except Exception as e:
+                print(f"Error processing lines_changed for {repo}: {e}")
 
         self._lines_changed = (additions, deletions)
         return self._lines_changed
@@ -528,9 +537,14 @@ Languages:
 
         total = 0
         for repo in await self.repos:
-            r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
-            for view in r.get("views", []):
-                total += view.get("count", 0)
+            try:
+                r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
+                if not isinstance(r, dict):
+                    continue
+                for view in r.get("views", []):
+                    total += (view or {}).get("count") or 0
+            except Exception as e:
+                print(f"Error processing traffic views for {repo}: {e}")
 
         self._views = total
         return total
