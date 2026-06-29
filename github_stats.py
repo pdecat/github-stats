@@ -325,21 +325,23 @@ Languages:
             )
             raw_results = raw_results if raw_results is not None else {}
 
-            self._name = raw_results.get("data", {}).get("viewer", {}).get("name", None)
+            self._name = (raw_results.get("data") or {}).get("viewer", {}).get("name", None)
             if self._name is None:
                 self._name = (
-                    raw_results.get("data", {})
+                    (raw_results.get("data") or {})
                     .get("viewer", {})
                     .get("login", "No Name")
                 )
 
             contrib_repos = (
-                raw_results.get("data", {})
+                (raw_results.get("data") or {})
                 .get("viewer", {})
                 .get("repositoriesContributedTo", {})
             )
             owned_repos = (
-                raw_results.get("data", {}).get("viewer", {}).get("repositories", {})
+                (raw_results.get("data") or {})
+                .get("viewer", {})
+                .get("repositories", {})
             )
 
             repos = owned_repos.get("nodes", [])
@@ -357,33 +359,33 @@ Languages:
                 if repo.get("isPrivate"):
                     continue
                 self._repos.add(name)
-                self._stargazers += repo.get("stargazers").get("totalCount", 0)
-                self._forks += repo.get("forkCount", 0)
+                self._stargazers += (repo.get("stargazers") or {}).get("totalCount", 0)
+                self._forks += repo.get("forkCount") or 0
 
-                for lang in repo.get("languages", {}).get("edges", []):
-                    name = lang.get("node", {}).get("name", "Other")
+                for lang in (repo.get("languages") or {}).get("edges", []):
+                    name = (lang.get("node") or {}).get("name", "Other")
                     languages = await self.languages
                     if name.lower() in exclude_langs_lower:
                         continue
                     if name in languages:
-                        languages[name]["size"] += lang.get("size", 0)
+                        languages[name]["size"] += lang.get("size") or 0
                         languages[name]["occurrences"] += 1
                     else:
                         languages[name] = {
-                            "size": lang.get("size", 0),
+                            "size": lang.get("size") or 0,
                             "occurrences": 1,
-                            "color": lang.get("node", {}).get("color"),
+                            "color": (lang.get("node") or {}).get("color"),
                         }
 
             if owned_repos.get("pageInfo", {}).get(
                 "hasNextPage", False
             ) or contrib_repos.get("pageInfo", {}).get("hasNextPage", False):
-                next_owned = owned_repos.get("pageInfo", {}).get(
-                    "endCursor", next_owned
-                )
-                next_contrib = contrib_repos.get("pageInfo", {}).get(
-                    "endCursor", next_contrib
-                )
+                end_cursor_owned = owned_repos.get("pageInfo", {}).get("endCursor")
+                if end_cursor_owned is not None:
+                    next_owned = end_cursor_owned
+                end_cursor_contrib = contrib_repos.get("pageInfo", {}).get("endCursor")
+                if end_cursor_contrib is not None:
+                    next_contrib = end_cursor_contrib
             else:
                 break
 
@@ -391,7 +393,7 @@ Languages:
         #       specific filetypes
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
         for k, v in self._languages.items():
-            v["prop"] = 100 * (v.get("size", 0) / langs_total)
+            v["prop"] = 100 * (v.get("size", 0) / langs_total) if langs_total > 0 else 0
 
     @property
     async def name(self) -> str:
