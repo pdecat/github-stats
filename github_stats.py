@@ -143,6 +143,7 @@ class Queries(object):
       nodes {{
         nameWithOwner
         isArchived
+        isPrivate
         stargazers {{
           totalCount
         }}
@@ -180,6 +181,7 @@ class Queries(object):
       nodes {{
         nameWithOwner
         isArchived
+        isPrivate
         stargazers {{
           totalCount
         }}
@@ -346,6 +348,8 @@ Languages:
                 if name in self._repos or name in self._exclude_repos:
                     continue
                 if repo.get("isArchived"):
+                    continue
+                if repo.get("isPrivate"):
                     continue
                 self._repos.add(name)
                 self._stargazers += repo.get("stargazers").get("totalCount", 0)
