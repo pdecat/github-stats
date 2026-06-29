@@ -73,7 +73,7 @@ class Queries(object):
         :return: deserialized REST JSON output
         """
 
-        for _ in range(60):
+        for _ in range(15):
             headers = {
                 "Authorization": f"token {self.access_token}",
             }
@@ -129,10 +129,10 @@ class Queries(object):
         :return: GraphQL query with overview of user repositories
         """
         is_fork_filter = "isFork: false," if ignore_forked_repos else ""
-        return f"""{{
-  viewer {{
-    login,
-    name,
+        owned_query = ""
+        if owned_cursor != "done":
+            after_owned = "null" if owned_cursor is None else f'"{owned_cursor}"'
+            owned_query = f"""
     repositories(
         first: 100,
         orderBy: {{
@@ -140,7 +140,7 @@ class Queries(object):
             direction: DESC
         }},
         {is_fork_filter}
-        after: {"null" if owned_cursor is None else '"'+ owned_cursor +'"'}
+        after: {after_owned}
     ) {{
       pageInfo {{
         hasNextPage
@@ -164,7 +164,12 @@ class Queries(object):
           }}
         }}
       }}
-    }}
+    }}"""
+
+        contrib_query = ""
+        if contrib_cursor != "done":
+            after_contrib = "null" if contrib_cursor is None else f'"{contrib_cursor}"'
+            contrib_query = f"""
     repositoriesContributedTo(
         first: 100,
         includeUserRepositories: false,
@@ -178,7 +183,7 @@ class Queries(object):
             REPOSITORY,
             PULL_REQUEST_REVIEW
         ]
-        after: {"null" if contrib_cursor is None else '"'+ contrib_cursor +'"'}
+        after: {after_contrib}
     ) {{
       pageInfo {{
         hasNextPage
@@ -202,7 +207,14 @@ class Queries(object):
           }}
         }}
       }}
-    }}
+    }}"""
+
+        return f"""{{
+  viewer {{
+    login,
+    name,
+    {owned_query}
+    {contrib_query}
   }}
 }}
 """
@@ -347,8 +359,10 @@ Languages:
                 .get("repositories", {})
             )
 
-            repos = owned_repos.get("nodes", [])
-            if not self._ignore_forked_repos:
+            repos = []
+            if next_owned != "done":
+                repos += owned_repos.get("nodes", [])
+            if not self._ignore_forked_repos and next_contrib != "done":
                 repos += contrib_repos.get("nodes", [])
 
             for repo in repos:
@@ -380,16 +394,20 @@ Languages:
                             "color": (lang.get("node") or {}).get("color"),
                         }
 
-            if owned_repos.get("pageInfo", {}).get(
-                "hasNextPage", False
-            ) or contrib_repos.get("pageInfo", {}).get("hasNextPage", False):
-                end_cursor_owned = owned_repos.get("pageInfo", {}).get("endCursor")
-                if end_cursor_owned is not None:
-                    next_owned = end_cursor_owned
-                end_cursor_contrib = contrib_repos.get("pageInfo", {}).get("endCursor")
-                if end_cursor_contrib is not None:
-                    next_contrib = end_cursor_contrib
+            has_next_owned = owned_repos.get("pageInfo", {}).get("hasNextPage", False)
+            has_next_contrib = contrib_repos.get("pageInfo", {}).get("hasNextPage", False)
+
+            if has_next_owned:
+                next_owned = owned_repos.get("pageInfo", {}).get("endCursor", next_owned)
             else:
+                next_owned = "done"
+
+            if not self._ignore_forked_repos and has_next_contrib:
+                next_contrib = contrib_repos.get("pageInfo", {}).get("endCursor", next_contrib)
+            else:
+                next_contrib = "done"
+
+            if next_owned == "done" and (self._ignore_forked_repos or next_contrib == "done"):
                 break
 
         # TODO: Improve languages to scale by number of contributions to
@@ -500,15 +518,14 @@ Languages:
         """
         if self._lines_changed is not None:
             return self._lines_changed
-        additions = 0
-        deletions = 0
-        for repo in await self.repos:
+
+        async def fetch_lines(repo):
             try:
                 r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
                 if not isinstance(r, list):
-                    continue
+                    return 0, 0
+                add, dlt = 0, 0
                 for author_obj in r:
-                    # Handle malformed response from the API by skipping this repo
                     if not isinstance(author_obj, dict) or not isinstance(
                         author_obj.get("author", {}), dict
                     ):
@@ -518,10 +535,18 @@ Languages:
                         continue
 
                     for week in author_obj.get("weeks", []):
-                        additions += (week or {}).get("a") or 0
-                        deletions += (week or {}).get("d") or 0
+                        add += (week or {}).get("a") or 0
+                        dlt += (week or {}).get("d") or 0
+                return add, dlt
             except Exception as e:
                 print(f"Error processing lines_changed for {repo}: {e}")
+                return 0, 0
+
+        tasks = [fetch_lines(repo) for repo in await self.repos]
+        results = await asyncio.gather(*tasks)
+
+        additions = sum(r[0] for r in results)
+        deletions = sum(r[1] for r in results)
 
         self._lines_changed = (additions, deletions)
         return self._lines_changed
@@ -535,19 +560,24 @@ Languages:
         if self._views is not None:
             return self._views
 
-        total = 0
-        for repo in await self.repos:
+        async def fetch_views(repo):
             try:
                 r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
                 if not isinstance(r, dict):
-                    continue
+                    return 0
+                total = 0
                 for view in r.get("views", []):
                     total += (view or {}).get("count") or 0
+                return total
             except Exception as e:
                 print(f"Error processing traffic views for {repo}: {e}")
+                return 0
 
-        self._views = total
-        return total
+        tasks = [fetch_views(repo) for repo in await self.repos]
+        results = await asyncio.gather(*tasks)
+
+        self._views = sum(results)
+        return self._views
 
 
 ###############################################################################
